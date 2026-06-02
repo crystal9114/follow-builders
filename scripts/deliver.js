@@ -152,16 +152,23 @@ async function sendEmail(text, apiKey, toEmail) {
 
 // -- WeCom Delivery ----------------------------------------------------------
 
-function splitMessage(text, maxLen = 3500) {
+function splitMessage(text, maxBytes = 3000) {
   const chunks = [];
   let remaining = text;
   while (remaining.length > 0) {
-    if (remaining.length <= maxLen) {
+    if (Buffer.byteLength(remaining, 'utf8') <= maxBytes) {
       chunks.push(remaining);
       break;
     }
-    let splitAt = remaining.lastIndexOf('\n', maxLen);
-    if (splitAt < maxLen * 0.5) splitAt = maxLen;
+    let splitAt = 0;
+    let bytes = 0;
+    for (let i = 0; i < remaining.length; i += 1) {
+      bytes += Buffer.byteLength(remaining[i], 'utf8');
+      if (bytes > maxBytes) break;
+      splitAt = i + 1;
+    }
+    const newlineSplit = remaining.lastIndexOf('\n', splitAt);
+    if (newlineSplit > splitAt * 0.5) splitAt = newlineSplit;
     chunks.push(remaining.slice(0, splitAt));
     remaining = remaining.slice(splitAt);
   }

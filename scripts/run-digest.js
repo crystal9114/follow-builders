@@ -19,7 +19,7 @@ loadEnv({ path: ENV_PATH });
 
 const DEFAULT_MODEL = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_API_BASE = "https://api.siliconflow.cn/v1";
-const DEFAULT_TIME = "08:30";
+const DEFAULT_TIME = "09:00";
 const DEFAULT_MAX_CONTEXT_CHARS = 60000;
 
 function env(name, fallback = undefined) {
@@ -40,6 +40,7 @@ function parseArgs() {
     mode,
     dryRun: args.includes("--dry-run") || boolEnv("DRY_RUN"),
     skipLlm: args.includes("--skip-llm") || boolEnv("SKIP_LLM"),
+    untilNow: args.includes("--until-now") || boolEnv("UNTIL_NOW"),
   };
 }
 
@@ -94,9 +95,61 @@ function truncate(text, maxChars) {
   return `${normalized.slice(0, maxChars)}\n...[truncated]`;
 }
 
-function topTweets(accounts, maxBuilders, maxTweetsPerBuilder) {
+function parseDigestTime() {
+  const [hour, minute] = env("DIGEST_TIME", DEFAULT_TIME).split(":").map(Number);
+  return {
+    hour: Number.isFinite(hour) ? hour : 9,
+    minute: Number.isFinite(minute) ? minute : 0,
+  };
+}
+
+function dailyAnchor(now = new Date()) {
+  const { hour, minute } = parseDigestTime();
+  const anchor = new Date(now);
+  anchor.setHours(hour, minute, 0, 0);
+  if (anchor > now) anchor.setDate(anchor.getDate() - 1);
+  return anchor;
+}
+
+function reportingWindow({ untilNow = false } = {}) {
+  const now = new Date();
+  const scheduledEnd = dailyAnchor(now);
+  const start = new Date(scheduledEnd);
+  start.setDate(start.getDate() - 1);
+  return {
+    start,
+    end: untilNow ? now : scheduledEnd,
+    mode: untilNow ? "manual-until-now" : "daily-anchored",
+  };
+}
+
+function formatDateTime(date) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: env("REPORT_TIMEZONE", "Asia/Shanghai"),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function itemInWindow(item, field, window) {
+  const value = item?.[field];
+  if (!value) return false;
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return false;
+  return timestamp >= window.start && timestamp <= window.end;
+}
+
+function topTweets(accounts, maxBuilders, maxTweetsPerBuilder, window) {
   return (accounts || [])
-    .filter((account) => account.tweets?.length)
+    .map((account) => ({
+      ...account,
+      tweets: (account.tweets || []).filter((tweet) => itemInWindow(tweet, "createdAt", window)),
+    }))
+    .filter((account) => account.tweets.length)
     .map((account) => ({
       ...account,
       score: account.tweets.reduce(
@@ -131,38 +184,56 @@ function topTweets(accounts, maxBuilders, maxTweetsPerBuilder) {
     }));
 }
 
-function buildModelInput(digest) {
+function buildModelInput(digest, window) {
   const maxContextChars = Number(env("MAX_CONTEXT_CHARS", DEFAULT_MAX_CONTEXT_CHARS));
   const maxPodcasts = Number(env("MAX_PODCASTS", 3));
   const maxBlogs = Number(env("MAX_BLOGS", 5));
   const maxBuilders = Number(env("MAX_BUILDERS", 12));
   const maxTweetsPerBuilder = Number(env("MAX_TWEETS_PER_BUILDER", 3));
+  const podcasts = (digest.podcasts || []).filter((podcast) =>
+    itemInWindow(podcast, "publishedAt", window),
+  );
+  const blogs = (digest.blogs || []).filter((blog) => itemInWindow(blog, "publishedAt", window));
+  const x = topTweets(digest.x, maxBuilders, maxTweetsPerBuilder, window);
 
   const compact = {
     generatedAt: digest.generatedAt,
+    reportWindow: {
+      mode: window.mode,
+      start: window.start.toISOString(),
+      end: window.end.toISOString(),
+      display: `${formatDateTime(window.start)} - ${formatDateTime(window.end)}`,
+      timezone: env("REPORT_TIMEZONE", "Asia/Shanghai"),
+    },
     stats: digest.stats,
+    filteredStats: {
+      podcastEpisodes: podcasts.length,
+      xBuilders: x.length,
+      totalTweets: x.reduce((sum, account) => sum + account.tweets.length, 0),
+      blogPosts: blogs.length,
+    },
     errors: digest.errors || [],
-    podcasts: (digest.podcasts || []).slice(0, maxPodcasts).map((podcast) => ({
+    podcasts: podcasts.slice(0, maxPodcasts).map((podcast) => ({
       name: podcast.name,
       title: podcast.title,
       publishedAt: podcast.publishedAt,
       url: podcast.url,
       transcript: truncate(podcast.transcript, 6000),
     })),
-    blogs: (digest.blogs || []).slice(0, maxBlogs).map((blog) => ({
+    blogs: blogs.slice(0, maxBlogs).map((blog) => ({
       name: blog.name,
       title: blog.title,
       publishedAt: blog.publishedAt,
       url: blog.url,
       content: truncate(blog.content, 6000),
     })),
-    x: topTweets(digest.x, maxBuilders, maxTweetsPerBuilder),
+    x,
   };
 
   return truncate(JSON.stringify(compact, null, 2), maxContextChars);
 }
 
-function buildMessages(modelInput) {
+function buildMessages(modelInput, window) {
   return [
     {
       role: "system",
@@ -173,15 +244,17 @@ function buildMessages(modelInput) {
       role: "user",
       content: [
         "请输出一份适合企业微信推送的中文 AI Builders 日报。",
+        `本期时间范围：${formatDateTime(window.start)} 到 ${formatDateTime(window.end)}（${env("REPORT_TIMEZONE", "Asia/Shanghai")}）。`,
         "",
         "格式要求：",
         "- 标题：AI Builders 日报 - YYYY-MM-DD",
+        "- 标题下方注明本期时间范围",
         "- 先给 5 条以内的“今日最值得关注”",
         "- 再按“播客 / X 观点 / 官方博客”分组",
         "- 每条包含：一句话结论、为什么重要、原始链接",
         "- 内容务实，避免营销腔",
         "- 如果某个分组没有内容，直接省略",
-        "- 总长度控制在 2500-3500 中文字",
+        "- 总长度控制在 1200-1800 中文字，优先保留高信号内容",
         "",
         "原始数据：",
         modelInput,
@@ -190,14 +263,14 @@ function buildMessages(modelInput) {
   ];
 }
 
-async function createDigestText(modelInput) {
+async function createDigestText(modelInput, window) {
   const apiKey = env("SILICONFLOW_API_KEY");
   const baseUrl = env("SILICONFLOW_API_BASE", DEFAULT_API_BASE).replace(/\/$/, "");
   const model = env("SILICONFLOW_MODEL", DEFAULT_MODEL);
 
   const body = {
     model,
-    messages: buildMessages(modelInput),
+    messages: buildMessages(modelInput, window),
     stream: false,
     temperature: Number(env("DIGEST_TEMPERATURE", 0.4)),
     max_tokens: Number(env("DIGEST_MAX_TOKENS", 4096)),
@@ -237,16 +310,23 @@ async function createDigestText(modelInput) {
   return content.trim();
 }
 
-function splitMessage(text, maxChars = 3500) {
+function splitMessage(text, maxBytes = 3000) {
   const chunks = [];
   let remaining = text.trim();
   while (remaining.length > 0) {
-    if (remaining.length <= maxChars) {
+    if (Buffer.byteLength(remaining, "utf8") <= maxBytes) {
       chunks.push(remaining);
       break;
     }
-    let splitAt = remaining.lastIndexOf("\n", maxChars);
-    if (splitAt < maxChars * 0.5) splitAt = maxChars;
+    let splitAt = 0;
+    let bytes = 0;
+    for (let i = 0; i < remaining.length; i += 1) {
+      bytes += Buffer.byteLength(remaining[i], "utf8");
+      if (bytes > maxBytes) break;
+      splitAt = i + 1;
+    }
+    const newlineSplit = remaining.lastIndexOf("\n", splitAt);
+    if (newlineSplit > splitAt * 0.5) splitAt = newlineSplit;
     chunks.push(remaining.slice(0, splitAt).trim());
     remaining = remaining.slice(splitAt).trim();
   }
@@ -287,11 +367,13 @@ async function writeRunLog(digestText) {
   await writeFile(join(LOG_DIR, filename), digestText, "utf8");
 }
 
-async function runOnce({ dryRun = false, skipLlm = false } = {}) {
+async function runOnce({ dryRun = false, skipLlm = false, untilNow = false } = {}) {
   assertConfig();
   log("Preparing digest input");
   const digest = await runPrepareDigest();
-  const modelInput = buildModelInput(digest);
+  const window = reportingWindow({ untilNow });
+  log(`Report window: ${formatDateTime(window.start)} - ${formatDateTime(window.end)}`);
+  const modelInput = buildModelInput(digest, window);
 
   if (skipLlm) {
     log(`Prepared model input (${modelInput.length} chars), skipping LLM`);
@@ -299,7 +381,7 @@ async function runOnce({ dryRun = false, skipLlm = false } = {}) {
   }
 
   log(`Calling SiliconFlow model ${env("SILICONFLOW_MODEL", DEFAULT_MODEL)}`);
-  const digestText = await createDigestText(modelInput);
+  const digestText = await createDigestText(modelInput, window);
   await writeRunLog(digestText);
 
   if (dryRun) {
@@ -314,7 +396,7 @@ async function runOnce({ dryRun = false, skipLlm = false } = {}) {
 }
 
 function nextRunAt() {
-  const [hour, minute] = env("DIGEST_TIME", DEFAULT_TIME).split(":").map(Number);
+  const { hour, minute } = parseDigestTime();
   const now = new Date();
   const next = new Date(now);
   next.setHours(hour, minute || 0, 0, 0);

@@ -25,7 +25,7 @@ docker compose up -d --build
 - `SILICONFLOW_API_KEY`: SiliconFlow API key，必填。
 - `SILICONFLOW_MODEL`: 默认 `deepseek-ai/DeepSeek-V4-Flash`。
 - `WECOM_WEBHOOK_URL`: 企业微信群机器人 webhook，必填。
-- `DIGEST_TIME`: 每日推送时间，默认 `08:30`，容器时区为 `Asia/Shanghai`。
+- `DIGEST_TIME`: 每日推送时间，默认 `09:00`，容器时区为 `Asia/Shanghai`。日报窗口为昨天 09:00 到今天 09:00。
 - `FEED_BASE_URL`: feed 根地址，默认在 `docker-compose.yml` 中指向原作者 central feed，避免 fork 缺少 X / pod2txt 抓取密钥后内容不更新。
 - `PROMPTS_BASE_URL`: prompts 根地址，默认指向当前 fork 的 `prompts` 目录。
 

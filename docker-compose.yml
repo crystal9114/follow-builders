@@ -10,7 +10,7 @@ services:
       - .env
     environment:
       - TZ=Asia/Shanghai
-      - DIGEST_TIME=08:30
+      - DIGEST_TIME=09:00
       - FEED_BASE_URL=https://raw.githubusercontent.com/zarazhangrui/follow-builders/main
       - PROMPTS_BASE_URL=https://raw.githubusercontent.com/crystal9114/follow-builders/main/prompts
     volumes:
