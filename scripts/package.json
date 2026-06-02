@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "generate-feed": "node generate-feed.js",
-    "prepare-digest": "node prepare-digest.js"
+    "prepare-digest": "node prepare-digest.js",
+    "run-once": "node run-digest.js once",
+    "run-scheduled": "node run-digest.js scheduled",
+    "healthcheck": "node run-digest.js healthcheck"
   },
   "dependencies": {
     "dotenv": "^16.4.0",

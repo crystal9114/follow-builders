@@ -4,7 +4,7 @@
 // Follow Builders — Delivery Script
 // ============================================================================
 // Sends a digest to the user via their chosen delivery method.
-// Supports: Telegram bot, Email (via Resend), or stdout (default).
+// Supports: Telegram bot, Email (via Resend), WeCom webhook, or stdout (default).
 //
 // Usage:
 //   echo "digest text" | node deliver.js
@@ -17,6 +17,7 @@
 // Delivery methods:
 //   - "telegram": sends via Telegram Bot API (needs TELEGRAM_BOT_TOKEN + chat ID)
 //   - "email": sends via Resend API (needs RESEND_API_KEY + email address)
+//   - "wecom": sends via WeCom group robot webhook (needs WECOM_WEBHOOK_URL)
 //   - "stdout" (default): just prints to terminal
 // ============================================================================
 
@@ -149,6 +150,44 @@ async function sendEmail(text, apiKey, toEmail) {
   }
 }
 
+// -- WeCom Delivery ----------------------------------------------------------
+
+function splitMessage(text, maxLen = 3500) {
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLen) {
+      chunks.push(remaining);
+      break;
+    }
+    let splitAt = remaining.lastIndexOf('\n', maxLen);
+    if (splitAt < maxLen * 0.5) splitAt = maxLen;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
+  }
+  return chunks;
+}
+
+async function sendWeCom(text, webhookUrl) {
+  const chunks = splitMessage(text);
+  for (const [index, chunk] of chunks.entries()) {
+    const content = chunks.length > 1 ? `${chunk}\n\n(${index + 1}/${chunks.length})` : chunk;
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        msgtype: 'markdown',
+        markdown: { content }
+      })
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok || result.errcode !== 0) {
+      throw new Error(`WeCom webhook error: HTTP ${res.status} ${JSON.stringify(result)}`);
+    }
+    if (chunks.length > 1) await new Promise(r => setTimeout(r, 500));
+  }
+}
+
 // -- Main --------------------------------------------------------------------
 
 async function main() {
@@ -194,6 +233,18 @@ async function main() {
           status: 'ok',
           method: 'email',
           message: `Digest sent to ${toEmail}`
+        }));
+        break;
+      }
+
+      case 'wecom': {
+        const webhookUrl = process.env.WECOM_WEBHOOK_URL;
+        if (!webhookUrl) throw new Error('WECOM_WEBHOOK_URL not found in .env');
+        await sendWeCom(digestText, webhookUrl);
+        console.log(JSON.stringify({
+          status: 'ok',
+          method: 'wecom',
+          message: 'Digest sent to WeCom'
         }));
         break;
       }

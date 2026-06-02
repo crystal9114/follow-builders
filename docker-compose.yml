@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  follow-builders:
+    build: .
+    image: crystalwind-follow-builders:latest
+    container_name: follow-builders
+    command: ["node", "scripts/run-digest.js", "scheduled"]
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+      - DIGEST_TIME=08:30
+      - FEED_BASE_URL=https://raw.githubusercontent.com/zarazhangrui/follow-builders/main
+      - PROMPTS_BASE_URL=https://raw.githubusercontent.com/crystal9114/follow-builders/main/prompts
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    restart: unless-stopped
+    dns:
+      - 223.5.5.5
+      - 8.8.8.8

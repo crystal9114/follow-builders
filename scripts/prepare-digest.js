@@ -18,19 +18,27 @@
 
 import { readFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { homedir } from 'os';
+import { fileURLToPath } from 'url';
 
 // -- Constants ---------------------------------------------------------------
 
 const USER_DIR = join(homedir(), '.follow-builders');
 const CONFIG_PATH = join(USER_DIR, 'config.json');
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
-const FEED_X_URL = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-x.json';
-const FEED_PODCASTS_URL = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-podcasts.json';
-const FEED_BLOGS_URL = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/feed-blogs.json';
+const DEFAULT_BASE = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main';
+const FEED_BASE = (process.env.FEED_BASE_URL || DEFAULT_BASE).replace(/\/$/, '');
+const PROMPTS_BASE = (
+  process.env.PROMPTS_BASE_URL ||
+  process.env.FOLLOW_BUILDERS_PROMPTS_BASE_URL ||
+  `${FEED_BASE}/prompts`
+).replace(/\/$/, '');
 
-const PROMPTS_BASE = 'https://raw.githubusercontent.com/zarazhangrui/follow-builders/main/prompts';
+const FEED_X_URL = `${FEED_BASE}/feed-x.json`;
+const FEED_PODCASTS_URL = `${FEED_BASE}/feed-podcasts.json`;
+const FEED_BLOGS_URL = `${FEED_BASE}/feed-blogs.json`;
 const PROMPT_FILES = [
   'summarize-podcast.md',
   'summarize-tweets.md',
@@ -105,8 +113,7 @@ async function main() {
   // Otherwise, fetch the latest from GitHub so they get central improvements.
   // If GitHub is unreachable, fall back to the local copy shipped with the skill.
   const prompts = {};
-  const scriptDir = decodeURIComponent(new URL('.', import.meta.url).pathname);
-  const localPromptsDir = join(scriptDir, '..', 'prompts');
+  const localPromptsDir = join(SCRIPT_DIR, '..', 'prompts');
   const userPromptsDir = join(USER_DIR, 'prompts');
 
   for (const filename of PROMPT_FILES) {
