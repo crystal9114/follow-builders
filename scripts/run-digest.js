@@ -24,6 +24,43 @@ const DEFAULT_API_BASE = "https://api.siliconflow.cn/v1";
 const DEFAULT_TIME = "09:00";
 const DEFAULT_MAX_CONTEXT_CHARS = 60000;
 const DEFAULT_MAX_ITEMS = 10;
+const AI_RELEVANCE_PATTERNS = [
+  /\bAI\b/i,
+  /\bAGI\b/i,
+  /\bLLM\b/i,
+  /\bGPT\b/i,
+  /\bChatGPT\b/i,
+  /\bClaude\b/i,
+  /\bCodex\b/i,
+  /\bOpenAI\b/i,
+  /\bAnthropic\b/i,
+  /\bDeepSeek\b/i,
+  /\bGemini\b/i,
+  /\bQwen\b/i,
+  /\bLlama\b/i,
+  /\bagent(s|ic)?\b/i,
+  /\bmodel(s)?\b/i,
+  /\bprompt(s|ing)?\b/i,
+  /\binference\b/i,
+  /\breasoning\b/i,
+  /\btoken(s)?\b/i,
+  /\bbenchmark(s)?\b/i,
+  /\beval(s|uation)?\b/i,
+  /\bRAG\b/i,
+  /\bvibe coding\b/i,
+  /\bOpenCode\b/i,
+  /\bCursor\b/i,
+  /\bv0\b/i,
+  /人工智能/,
+  /大模型/,
+  /智能体/,
+  /代理/,
+  /模型/,
+  /提示词/,
+  /推理/,
+  /编码/,
+  /自动化/,
+];
 
 function env(name, fallback = undefined) {
   const value = process.env[name];
@@ -158,6 +195,19 @@ function isLowSignalTweet(tweet) {
   return text.startsWith("@") && withoutMentions.length < 20;
 }
 
+function isAiRelevant(candidate) {
+  const haystack = [
+    candidate.type,
+    candidate.sourceName,
+    candidate.title,
+    candidate.content,
+    candidate.url,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return AI_RELEVANCE_PATTERNS.some((pattern) => pattern.test(haystack));
+}
+
 function buildCandidates(digest, window) {
   const candidates = [];
 
@@ -165,7 +215,7 @@ function buildCandidates(digest, window) {
     for (const tweet of account.tweets || []) {
       if (!itemInWindow(tweet, "createdAt", window)) continue;
       if (isLowSignalTweet(tweet)) continue;
-      candidates.push({
+      const candidate = {
         sourceId: `x:${tweet.id || tweet.url}`,
         type: "x",
         sourceName: `${account.name} (@${account.handle})`,
@@ -174,13 +224,15 @@ function buildCandidates(digest, window) {
         url: tweet.url,
         score: scoreTweet(tweet),
         content: truncate(tweet.text, 1200),
-      });
+      };
+      candidate.aiRelevant = isAiRelevant(candidate);
+      candidates.push(candidate);
     }
   }
 
   for (const podcast of digest.podcasts || []) {
     if (!itemInWindow(podcast, "publishedAt", window)) continue;
-    candidates.push({
+    const candidate = {
       sourceId: `podcast:${podcast.guid || podcast.url}`,
       type: "podcast",
       sourceName: podcast.name,
@@ -189,12 +241,14 @@ function buildCandidates(digest, window) {
       url: podcast.url,
       score: 100,
       content: truncate(podcast.transcript, 5000),
-    });
+    };
+    candidate.aiRelevant = true;
+    candidates.push(candidate);
   }
 
   for (const blog of digest.blogs || []) {
     if (!itemInWindow(blog, "publishedAt", window)) continue;
-    candidates.push({
+    const candidate = {
       sourceId: `blog:${blog.url}`,
       type: "blog",
       sourceName: blog.name,
@@ -203,12 +257,19 @@ function buildCandidates(digest, window) {
       url: blog.url,
       score: 90,
       content: truncate(blog.content, 5000),
-    });
+    };
+    candidate.aiRelevant = true;
+    candidates.push(candidate);
   }
 
   return candidates
     .filter((item) => item.url)
-    .sort((a, b) => b.score - a.score || new Date(b.publishedAt) - new Date(a.publishedAt));
+    .sort(
+      (a, b) =>
+        Number(b.aiRelevant) - Number(a.aiRelevant) ||
+        b.score - a.score ||
+        new Date(b.publishedAt) - new Date(a.publishedAt),
+    );
 }
 
 async function loadSentState() {
@@ -294,11 +355,13 @@ function buildMessages(modelInput, window) {
         "",
         "规则：",
         `- 最多 ${env("MAX_DIGEST_ITEMS", DEFAULT_MAX_ITEMS)} 条，不足则按实际数量输出`,
+        "- 候选资讯已按 AI 相关性和重要性排序；优先从前面的候选中选择",
+        "- 如果 AI 相关候选不足，不要硬过滤非 AI 内容，可以选择其他高信号内容补足",
         "- 每条只保留一个源链接 url，不要再写讨论链接、详情链接、参考链接",
         "- 不要使用“讨论链接”“补充链接”“详情链接”这类说法，统一叫“来源”",
         "- 不要编造候选资讯中没有的事实",
         "- 内容简洁，避免营销腔",
-        "- 按重要性排序",
+        "- 必须按候选资讯出现顺序输出，不要自行重新排序",
         "",
         "原始数据：",
         modelInput,

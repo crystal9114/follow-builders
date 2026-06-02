@@ -27,6 +27,7 @@ docker compose up -d --build
 - `WECOM_WEBHOOK_URL`: 企业微信群机器人 webhook，必填。
 - `DIGEST_TIME`: 每日推送时间，默认 `09:00`，容器时区为 `Asia/Shanghai`。日报窗口为昨天 09:00 到今天 09:00。
 - `MAX_DIGEST_ITEMS`: 每天最多推送条数，默认 `10`。不足 10 条时按实际数量发送；每条资讯单独一条企业微信消息。
+- 候选会优先按 AI 相关性排序：如果 AI 相关内容够 10 条，只展示 AI 相关的 10 条；不够时用其他高信号内容补足。
 - `WECOM_ITEM_DELAY_MS`: 每条消息之间的间隔，默认 `1500` 毫秒。
 - `DEDUP_RETENTION_DAYS`: 已推送资讯去重状态保留天数，默认 `30`。
 - 每条消息只保留一个 `来源` 链接，不额外附讨论链接或详情链接。
