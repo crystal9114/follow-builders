@@ -50,10 +50,9 @@ jobs:
               printf '%s\n' 'DIGEST_TEMPERATURE=0.4'
               printf '%s\n' 'DIGEST_MAX_TOKENS=4096'
               printf '%s\n' 'MAX_CONTEXT_CHARS=60000'
-              printf '%s\n' 'MAX_PODCASTS=3'
-              printf '%s\n' 'MAX_BLOGS=5'
-              printf '%s\n' 'MAX_BUILDERS=12'
-              printf '%s\n' 'MAX_TWEETS_PER_BUILDER=3'
+              printf '%s\n' 'MAX_DIGEST_ITEMS=10'
+              printf '%s\n' 'WECOM_ITEM_DELAY_MS=1500'
+              printf '%s\n' 'DEDUP_RETENTION_DAYS=30'
             } > .env
 
             if docker compose version >/dev/null 2>&1; then

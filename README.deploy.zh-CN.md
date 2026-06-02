@@ -26,6 +26,10 @@ docker compose up -d --build
 - `SILICONFLOW_MODEL`: 默认 `deepseek-ai/DeepSeek-V4-Flash`。
 - `WECOM_WEBHOOK_URL`: 企业微信群机器人 webhook，必填。
 - `DIGEST_TIME`: 每日推送时间，默认 `09:00`，容器时区为 `Asia/Shanghai`。日报窗口为昨天 09:00 到今天 09:00。
+- `MAX_DIGEST_ITEMS`: 每天最多推送条数，默认 `10`。每条资讯单独一条企业微信消息。
+- `WECOM_ITEM_DELAY_MS`: 每条消息之间的间隔，默认 `1500` 毫秒。
+- `DEDUP_RETENTION_DAYS`: 已推送资讯去重状态保留天数，默认 `30`。
+- 每条消息只保留一个 `来源` 链接，不额外附讨论链接或详情链接。
 - `FEED_BASE_URL`: feed 根地址，默认在 `docker-compose.yml` 中指向原作者 central feed，避免 fork 缺少 X / pod2txt 抓取密钥后内容不更新。
 - `PROMPTS_BASE_URL`: prompts 根地址，默认指向当前 fork 的 `prompts` 目录。
 

@@ -11,6 +11,7 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - DIGEST_TIME=09:00
+      - MAX_DIGEST_ITEMS=10
       - FEED_BASE_URL=https://raw.githubusercontent.com/zarazhangrui/follow-builders/main
       - PROMPTS_BASE_URL=https://raw.githubusercontent.com/crystal9114/follow-builders/main/prompts
     volumes:

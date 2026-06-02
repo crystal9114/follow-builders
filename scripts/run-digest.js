@@ -5,7 +5,7 @@
 // and delivers it to a WeCom group robot webhook.
 
 import { spawn } from "child_process";
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir, readFile, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { config as loadEnv } from "dotenv";
@@ -13,6 +13,8 @@ import { config as loadEnv } from "dotenv";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = join(SCRIPT_DIR, "..");
 const LOG_DIR = join(ROOT_DIR, "logs");
+const DATA_DIR = join(ROOT_DIR, "data");
+const SENT_STATE_PATH = join(DATA_DIR, "sent-items.json");
 const ENV_PATH = join(ROOT_DIR, ".env");
 
 loadEnv({ path: ENV_PATH });
@@ -21,6 +23,7 @@ const DEFAULT_MODEL = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_API_BASE = "https://api.siliconflow.cn/v1";
 const DEFAULT_TIME = "09:00";
 const DEFAULT_MAX_CONTEXT_CHARS = 60000;
+const DEFAULT_MAX_ITEMS = 10;
 
 function env(name, fallback = undefined) {
   const value = process.env[name];
@@ -41,6 +44,7 @@ function parseArgs() {
     dryRun: args.includes("--dry-run") || boolEnv("DRY_RUN"),
     skipLlm: args.includes("--skip-llm") || boolEnv("SKIP_LLM"),
     untilNow: args.includes("--until-now") || boolEnv("UNTIL_NOW"),
+    ignoreDedup: args.includes("--ignore-dedup") || boolEnv("IGNORE_DEDUP"),
   };
 }
 
@@ -143,59 +147,101 @@ function itemInWindow(item, field, window) {
   return timestamp >= window.start && timestamp <= window.end;
 }
 
-function topTweets(accounts, maxBuilders, maxTweetsPerBuilder, window) {
-  return (accounts || [])
-    .map((account) => ({
-      ...account,
-      tweets: (account.tweets || []).filter((tweet) => itemInWindow(tweet, "createdAt", window)),
-    }))
-    .filter((account) => account.tweets.length)
-    .map((account) => ({
-      ...account,
-      score: account.tweets.reduce(
-        (sum, tweet) =>
-          sum + (tweet.likes || 0) + (tweet.retweets || 0) * 2 + (tweet.replies || 0),
-        0,
-      ),
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, maxBuilders)
-    .map((account) => ({
-      name: account.name,
-      handle: account.handle,
-      tweets: account.tweets
-        .slice()
-        .sort(
-          (a, b) =>
-            (b.likes || 0) +
-            (b.retweets || 0) * 2 +
-            (b.replies || 0) -
-            ((a.likes || 0) + (a.retweets || 0) * 2 + (a.replies || 0)),
-        )
-        .slice(0, maxTweetsPerBuilder)
-        .map((tweet) => ({
-          text: truncate(tweet.text, 900),
-          url: tweet.url,
-          createdAt: tweet.createdAt,
-          likes: tweet.likes,
-          retweets: tweet.retweets,
-          replies: tweet.replies,
-        })),
-    }));
+function scoreTweet(tweet) {
+  return (tweet.likes || 0) + (tweet.retweets || 0) * 2 + (tweet.replies || 0);
 }
 
-function buildModelInput(digest, window) {
-  const maxContextChars = Number(env("MAX_CONTEXT_CHARS", DEFAULT_MAX_CONTEXT_CHARS));
-  const maxPodcasts = Number(env("MAX_PODCASTS", 3));
-  const maxBlogs = Number(env("MAX_BLOGS", 5));
-  const maxBuilders = Number(env("MAX_BUILDERS", 12));
-  const maxTweetsPerBuilder = Number(env("MAX_TWEETS_PER_BUILDER", 3));
-  const podcasts = (digest.podcasts || []).filter((podcast) =>
-    itemInWindow(podcast, "publishedAt", window),
-  );
-  const blogs = (digest.blogs || []).filter((blog) => itemInWindow(blog, "publishedAt", window));
-  const x = topTweets(digest.x, maxBuilders, maxTweetsPerBuilder, window);
+function isLowSignalTweet(tweet) {
+  const text = String(tweet.text || "").trim();
+  const withoutUrls = text.replace(/https?:\/\/\S+/g, "").trim();
+  const withoutMentions = withoutUrls.replace(/@\w+/g, "").trim();
+  return text.startsWith("@") && withoutMentions.length < 20;
+}
 
+function buildCandidates(digest, window) {
+  const candidates = [];
+
+  for (const account of digest.x || []) {
+    for (const tweet of account.tweets || []) {
+      if (!itemInWindow(tweet, "createdAt", window)) continue;
+      if (isLowSignalTweet(tweet)) continue;
+      candidates.push({
+        sourceId: `x:${tweet.id || tweet.url}`,
+        type: "x",
+        sourceName: `${account.name} (@${account.handle})`,
+        title: `${account.name} 的 X 动态`,
+        publishedAt: tweet.createdAt,
+        url: tweet.url,
+        score: scoreTweet(tweet),
+        content: truncate(tweet.text, 1200),
+      });
+    }
+  }
+
+  for (const podcast of digest.podcasts || []) {
+    if (!itemInWindow(podcast, "publishedAt", window)) continue;
+    candidates.push({
+      sourceId: `podcast:${podcast.guid || podcast.url}`,
+      type: "podcast",
+      sourceName: podcast.name,
+      title: podcast.title,
+      publishedAt: podcast.publishedAt,
+      url: podcast.url,
+      score: 100,
+      content: truncate(podcast.transcript, 5000),
+    });
+  }
+
+  for (const blog of digest.blogs || []) {
+    if (!itemInWindow(blog, "publishedAt", window)) continue;
+    candidates.push({
+      sourceId: `blog:${blog.url}`,
+      type: "blog",
+      sourceName: blog.name,
+      title: blog.title,
+      publishedAt: blog.publishedAt,
+      url: blog.url,
+      score: 90,
+      content: truncate(blog.content, 5000),
+    });
+  }
+
+  return candidates
+    .filter((item) => item.url)
+    .sort((a, b) => b.score - a.score || new Date(b.publishedAt) - new Date(a.publishedAt));
+}
+
+async function loadSentState() {
+  try {
+    const state = JSON.parse(await readFile(SENT_STATE_PATH, "utf8"));
+    return {
+      sent: state.sent && typeof state.sent === "object" ? state.sent : {},
+    };
+  } catch {
+    return { sent: {} };
+  }
+}
+
+async function saveSentState(state) {
+  await mkdir(DATA_DIR, { recursive: true });
+  const cutoff = Date.now() - Number(env("DEDUP_RETENTION_DAYS", 30)) * 24 * 60 * 60 * 1000;
+  for (const [id, ts] of Object.entries(state.sent)) {
+    if (new Date(ts).getTime() < cutoff) delete state.sent[id];
+  }
+  await writeFile(SENT_STATE_PATH, JSON.stringify(state, null, 2), "utf8");
+}
+
+function filterUnsent(candidates, sentState, ignoreDedup) {
+  if (ignoreDedup) return candidates;
+  return candidates.filter((item) => !sentState.sent[item.sourceId]);
+}
+
+function selectCandidates(candidates) {
+  return candidates.slice(0, Number(env("MAX_DIGEST_ITEMS", DEFAULT_MAX_ITEMS)));
+}
+
+function buildModelInput(digest, window, candidates) {
+  const maxContextChars = Number(env("MAX_CONTEXT_CHARS", DEFAULT_MAX_CONTEXT_CHARS));
   const compact = {
     generatedAt: digest.generatedAt,
     reportWindow: {
@@ -207,27 +253,13 @@ function buildModelInput(digest, window) {
     },
     stats: digest.stats,
     filteredStats: {
-      podcastEpisodes: podcasts.length,
-      xBuilders: x.length,
-      totalTweets: x.reduce((sum, account) => sum + account.tweets.length, 0),
-      blogPosts: blogs.length,
+      candidateItems: candidates.length,
+      xItems: candidates.filter((item) => item.type === "x").length,
+      podcastItems: candidates.filter((item) => item.type === "podcast").length,
+      blogItems: candidates.filter((item) => item.type === "blog").length,
     },
     errors: digest.errors || [],
-    podcasts: podcasts.slice(0, maxPodcasts).map((podcast) => ({
-      name: podcast.name,
-      title: podcast.title,
-      publishedAt: podcast.publishedAt,
-      url: podcast.url,
-      transcript: truncate(podcast.transcript, 6000),
-    })),
-    blogs: blogs.slice(0, maxBlogs).map((blog) => ({
-      name: blog.name,
-      title: blog.title,
-      publishedAt: blog.publishedAt,
-      url: blog.url,
-      content: truncate(blog.content, 6000),
-    })),
-    x,
+    candidates,
   };
 
   return truncate(JSON.stringify(compact, null, 2), maxContextChars);
@@ -243,18 +275,30 @@ function buildMessages(modelInput, window) {
     {
       role: "user",
       content: [
-        "请输出一份适合企业微信推送的中文 AI Builders 日报。",
+        "请从候选资讯中挑选并改写为适合企业微信逐条推送的 Top 10 简报。",
         `本期时间范围：${formatDateTime(window.start)} 到 ${formatDateTime(window.end)}（${env("REPORT_TIMEZONE", "Asia/Shanghai")}）。`,
         "",
-        "格式要求：",
-        "- 标题：AI Builders 日报 - YYYY-MM-DD",
-        "- 标题下方注明本期时间范围",
-        "- 先给 5 条以内的“今日最值得关注”",
-        "- 再按“播客 / X 观点 / 官方博客”分组",
-        "- 每条包含：一句话结论、为什么重要、原始链接",
-        "- 内容务实，避免营销腔",
-        "- 如果某个分组没有内容，直接省略",
-        "- 总长度控制在 1200-1800 中文字，优先保留高信号内容",
+        "只输出 JSON，不要输出 Markdown，不要解释。",
+        "JSON schema:",
+        "{",
+        '  "items": [',
+        "    {",
+        '      "sourceId": "必须原样复制候选资讯的 sourceId",',
+        '      "title": "20字以内标题",',
+        '      "summary": "40-80字，说明发生了什么",',
+        '      "whyItMatters": "40-80字，说明为什么重要",',
+        '      "url": "必须原样复制候选资讯的 url"',
+        "    }",
+        "  ]",
+        "}",
+        "",
+        "规则：",
+        `- 最多 ${env("MAX_DIGEST_ITEMS", DEFAULT_MAX_ITEMS)} 条，不足则按实际数量输出`,
+        "- 每条只保留一个源链接 url，不要再写讨论链接、详情链接、参考链接",
+        "- 不要使用“讨论链接”“补充链接”“详情链接”这类说法，统一叫“来源”",
+        "- 不要编造候选资讯中没有的事实",
+        "- 内容简洁，避免营销腔",
+        "- 按重要性排序",
         "",
         "原始数据：",
         modelInput,
@@ -263,7 +307,20 @@ function buildMessages(modelInput, window) {
   ];
 }
 
-async function createDigestText(modelInput, window) {
+function parseModelItems(content) {
+  const cleaned = content
+    .trim()
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  const data = JSON.parse(cleaned);
+  if (!Array.isArray(data.items)) {
+    throw new Error("Model output JSON has no items array");
+  }
+  return data.items;
+}
+
+async function createDigestItems(modelInput, window, candidates) {
   const apiKey = env("SILICONFLOW_API_KEY");
   const baseUrl = env("SILICONFLOW_API_BASE", DEFAULT_API_BASE).replace(/\/$/, "");
   const model = env("SILICONFLOW_MODEL", DEFAULT_MODEL);
@@ -307,7 +364,26 @@ async function createDigestText(modelInput, window) {
     throw new Error(`SiliconFlow API returned no content: ${JSON.stringify(data)}`);
   }
 
-  return content.trim();
+  const candidateById = new Map(candidates.map((item) => [item.sourceId, item]));
+  const seen = new Set();
+  return parseModelItems(content)
+    .filter((item) => candidateById.has(item.sourceId))
+    .filter((item) => {
+      if (seen.has(item.sourceId)) return false;
+      seen.add(item.sourceId);
+      return true;
+    })
+    .slice(0, Number(env("MAX_DIGEST_ITEMS", DEFAULT_MAX_ITEMS)))
+    .map((item) => {
+      const source = candidateById.get(item.sourceId);
+      return {
+        sourceId: source.sourceId,
+        title: truncate(item.title || source.title, 40),
+        summary: truncate(item.summary || source.content, 140),
+        whyItMatters: truncate(item.whyItMatters || "值得关注。", 140),
+        url: source.url,
+      };
+    });
 }
 
 function splitMessage(text, maxBytes = 3000) {
@@ -361,38 +437,105 @@ async function sendWeCom(text) {
   }
 }
 
-async function writeRunLog(digestText) {
-  await mkdir(LOG_DIR, { recursive: true });
-  const filename = `digest-${new Date().toISOString().slice(0, 10)}.md`;
-  await writeFile(join(LOG_DIR, filename), digestText, "utf8");
+function formatItemMessage(item, index, total, window) {
+  return [
+    `# ${index + 1}/${total} ${item.title}`,
+    "",
+    `**结论**：${item.summary}`,
+    "",
+    `**为什么重要**：${item.whyItMatters}`,
+    "",
+    `**来源**：${item.url}`,
+    "",
+    `<font color=\"comment\">${formatDateTime(window.start)} - ${formatDateTime(window.end)}</font>`,
+  ].join("\n");
 }
 
-async function runOnce({ dryRun = false, skipLlm = false, untilNow = false } = {}) {
+async function sendWeComItems(items, window) {
+  if (items.length === 0) {
+    await sendWeCom(
+      [
+        "# AI Builders 日报",
+        "",
+        "本期没有新的未推送资讯。",
+        "",
+        `<font color=\"comment\">${formatDateTime(window.start)} - ${formatDateTime(window.end)}</font>`,
+      ].join("\n"),
+    );
+    return;
+  }
+
+  for (const [index, item] of items.entries()) {
+    await sendWeCom(formatItemMessage(item, index, items.length, window));
+    if (index < items.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, Number(env("WECOM_ITEM_DELAY_MS", 1500))));
+    }
+  }
+}
+
+async function writeRunLog(items, window) {
+  await mkdir(LOG_DIR, { recursive: true });
+  const filename = `digest-${new Date().toISOString().slice(0, 10)}.json`;
+  await writeFile(
+    join(LOG_DIR, filename),
+    JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        window: {
+          start: window.start.toISOString(),
+          end: window.end.toISOString(),
+          display: `${formatDateTime(window.start)} - ${formatDateTime(window.end)}`,
+        },
+        items,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+}
+
+async function runOnce({ dryRun = false, skipLlm = false, untilNow = false, ignoreDedup = false } = {}) {
   assertConfig();
   log("Preparing digest input");
   const digest = await runPrepareDigest();
   const window = reportingWindow({ untilNow });
   log(`Report window: ${formatDateTime(window.start)} - ${formatDateTime(window.end)}`);
-  const modelInput = buildModelInput(digest, window);
+  const sentState = await loadSentState();
+  const allCandidates = buildCandidates(digest, window);
+  const candidates = selectCandidates(filterUnsent(allCandidates, sentState, ignoreDedup));
+  const modelInput = buildModelInput(digest, window, candidates);
 
   if (skipLlm) {
-    log(`Prepared model input (${modelInput.length} chars), skipping LLM`);
+    log(
+      `Prepared ${candidates.length} candidate items (${modelInput.length} chars), skipping LLM`,
+    );
+    return;
+  }
+
+  if (candidates.length === 0) {
+    log("No unsent candidate items");
+    if (!dryRun) await sendWeComItems([], window);
     return;
   }
 
   log(`Calling SiliconFlow model ${env("SILICONFLOW_MODEL", DEFAULT_MODEL)}`);
-  const digestText = await createDigestText(modelInput, window);
-  await writeRunLog(digestText);
+  const items = await createDigestItems(modelInput, window, candidates);
+  await writeRunLog(items, window);
 
   if (dryRun) {
     log("Dry run enabled; not sending WeCom message");
-    console.log(digestText);
+    console.log(JSON.stringify({ items }, null, 2));
     return;
   }
 
-  log("Sending digest to WeCom");
-  await sendWeCom(digestText);
-  log("Digest sent");
+  log(`Sending ${items.length} item(s) to WeCom`);
+  await sendWeComItems(items, window);
+  for (const item of items) {
+    sentState.sent[item.sourceId] = new Date().toISOString();
+  }
+  await saveSentState(sentState);
+  log("Digest items sent");
 }
 
 function nextRunAt() {
