@@ -38,13 +38,13 @@ jobs:
             echo "===== deploy follow-builders $(date '+%Y-%m-%d %H:%M:%S') ====="
             cd /www/wwwroot/follow-builders
 
+            # 凭证（SILICONFLOW_API_KEY / WECOM_WEBHOOK_URL）已迁密匣 mixia，
+            # 由 compose env_file 引用 /www/wwwroot/mixia/secrets/company/common.env
             {
-              printf '%s\n' 'SILICONFLOW_API_KEY=${{ secrets.SILICONFLOW_API_KEY }}'
               printf '%s\n' 'SILICONFLOW_MODEL=deepseek-ai/DeepSeek-V4-Flash'
               printf '%s\n' 'SILICONFLOW_API_BASE=https://api.siliconflow.cn/v1'
               printf '%s\n' 'SILICONFLOW_TIMEOUT_MS=240000'
               printf '%s\n' 'SILICONFLOW_REASONING_EFFORT=high'
-              printf '%s\n' 'WECOM_WEBHOOK_URL=${{ secrets.WECOM_WEBHOOK_URL }}'
               printf '%s\n' 'WECOM_MSGTYPE=markdown'
               printf '%s\n' 'DIGEST_TIME=09:00'
               printf '%s\n' 'DIGEST_TEMPERATURE=0.4'

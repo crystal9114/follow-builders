@@ -6,7 +6,10 @@ services:
     image: crystalwind-follow-builders:latest
     container_name: follow-builders
     command: ["node", "scripts/run-digest.js", "scheduled"]
+    # 凭证（SILICONFLOW_API_KEY / WECOM_WEBHOOK_URL）来自密匣 mixia，
+    # 改值/重启规则见 mixia secrets/registry.md；项目 .env 放最后可覆盖兜底
     env_file:
+      - /www/wwwroot/mixia/secrets/company/common.env
       - .env
     environment:
       - TZ=Asia/Shanghai
